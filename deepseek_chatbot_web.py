@@ -7,8 +7,6 @@ from datetime import datetime
 
 # ==================== 多模型配置（本地/部署双兼容） ====================
 # 本地测试：取消注释，填写你的API Key
-# DEEPSEEK_API_KEY = "sk-42a305a05a294068b17893a5e9fd1a61"
-# QWEN_API_KEY = "sk-f941a2f3c4144510beede9d575fdabe5"
 
 # 部署时：从Streamlit Secrets读取（安全）
 DEEPSEEK_API_KEY = st.secrets.get("DEEPSEEK_API_KEY", "")

@@ -5,20 +5,33 @@ import time
 from typing import List, Dict
 from datetime import datetime
 
-# ==================== 核心配置（本地/部署双兼容） ====================
-# 本地测试：直接填写你的API Key
-# 本地测试时取消注释，部署时注释掉
-# 部署时启用这行，从 Streamlit Secrets 读取
-API_KEY = st.secrets["API_KEY"]
-# 部署时：注释上面一行，启用下面一行
-# API_KEY = st.secrets["API_KEY"]
+# ==================== 多模型配置（本地/部署双兼容） ====================
+# 本地测试：取消注释，填写你的API Key
+# DEEPSEEK_API_KEY = "sk-42a305a05a294068b17893a5e9fd1a61"
+# QWEN_API_KEY = "sk-f941a2f3c4144510beede9d575fdabe5"
 
-API_URL = "https://api.deepseek.com/v1/chat/completions"
-DEFAULT_MODEL = "deepseek-chat"
+# 部署时：从Streamlit Secrets读取（安全）
+DEEPSEEK_API_KEY = st.secrets.get("DEEPSEEK_API_KEY", "")
+QWEN_API_KEY = st.secrets.get("QWEN_API_KEY", "")
 
-# ==================== DeepSeek机器人核心类 ====================
-class DeepSeekChatBot:
-    def __init__(self, temperature=0.3, max_tokens=150, retry_times=3, retry_interval=3):
+# 模型配置表
+MODEL_CONFIGS = {
+    "DeepSeek（正式风）": {
+        "api_url": "https://api.deepseek.com/v1/chat/completions",
+        "model_name": "deepseek-chat",
+        "api_key": DEEPSEEK_API_KEY
+    },
+    "千问（口语风）": {
+        "api_url": "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions",
+        "model_name": "qwen-turbo",
+        "api_key": QWEN_API_KEY
+    }
+}
+
+# ==================== 多模型核心类 ====================
+class MultiModelChatBot:
+    def __init__(self, model_name="DeepSeek（正式风）", temperature=0.3, max_tokens=150, retry_times=3, retry_interval=3):
+        self.model_name = model_name
         self.temperature = temperature
         self.max_tokens = max_tokens
         self.retry_times = retry_times
@@ -26,17 +39,30 @@ class DeepSeekChatBot:
         self.chat_history: List[Dict[str, str]] = []
         requests.packages.urllib3.disable_warnings()
 
+    def _get_config(self):
+        """获取当前模型的配置"""
+        if self.model_name not in MODEL_CONFIGS:
+            raise ValueError(f"不支持的模型：{self.model_name}")
+        config = MODEL_CONFIGS[self.model_name]
+        if not config["api_key"]:
+            raise ValueError(f"{self.model_name} 的API Key未配置！")
+        return config
+
     def _get_headers(self) -> Dict[str, str]:
+        """生成请求头"""
+        config = self._get_config()
         return {
             "Content-Type": "application/json",
-            "Authorization": f"Bearer {API_KEY}"
+            "Authorization": f"Bearer {config['api_key']}"
         }
 
     def _call_api_with_retry(self, request_data: Dict) -> Dict:
+        """带重试的API调用"""
+        config = self._get_config()
         for retry_idx in range(1, self.retry_times + 1):
             try:
                 response = requests.post(
-                    url=API_URL,
+                    url=config["api_url"],
                     headers=self._get_headers(),
                     json=request_data,
                     verify=False,
@@ -46,31 +72,40 @@ class DeepSeekChatBot:
                 return response.json()
             except Exception as e:
                 if retry_idx == self.retry_times:
-                    raise Exception(f"调用失败（重试{self.retry_times}次）：{str(e)}")
+                    raise Exception(f"{self.model_name}调用失败（重试{self.retry_times}次）：{str(e)}")
                 time.sleep(self.retry_interval)
 
     def send_message(self, user_input: str, reset_history=False, custom_temp=None, custom_max_tokens=None) -> str:
+        """发送消息（统一接口，适配所有模型）"""
         if reset_history:
             self.chat_history.clear()
         if not user_input.strip():
             raise ValueError("输入不能为空！")
         
+        # 更新聊天历史
         self.chat_history.append({"role": "user", "content": user_input.strip()})
+        
+        # 构建请求数据（兼容所有模型）
+        config = self._get_config()
         request_data = {
-            "model": DEFAULT_MODEL,
+            "model": config["model_name"],
             "messages": self.chat_history,
             "temperature": custom_temp if custom_temp is not None else self.temperature,
             "max_tokens": custom_max_tokens if custom_max_tokens is not None else self.max_tokens
         }
 
+        # 调用API
         api_result = self._call_api_with_retry(request_data)
         ai_raw_reply = api_result["choices"][0]["message"]["content"]
         clean_reply = self._format_reply(ai_raw_reply)
+        
+        # 保存回复到历史
         self.chat_history.append({"role": "assistant", "content": clean_reply})
         return clean_reply
 
     @staticmethod
     def _format_reply(raw_reply: str) -> str:
+        """格式化回复"""
         if not raw_reply:
             return "AI暂无有效回复"
         return raw_reply.strip()
@@ -84,7 +119,7 @@ PROMPT_TEMPLATES = {
     "朋友圈文案（生活感）": "写3句25字以内的生活感朋友圈文案，风格轻松自然，贴近日常"
 }
 
-# ==================== 工具函数（导出） ====================
+# ==================== 工具函数 ====================
 def export_to_txt(text: str):
     """导出文案为TXT文件"""
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -96,10 +131,10 @@ def export_to_txt(text: str):
         mime="text/plain"
     )
 
-# ==================== Streamlit网页界面（方案2最终版） ====================
+# ==================== Streamlit网页界面（多模型版） ====================
 def main():
     st.set_page_config(
-        page_title="DeepSeek智能文案助手",
+        page_title="多模型智能文案助手",
         page_icon="✍️",
         layout="wide",
         initial_sidebar_state="expanded"
@@ -108,40 +143,48 @@ def main():
     # 自定义CSS美化
     st.markdown("""
         <style>
-            /* 整体样式 */
             body {font-family: "Microsoft YaHei", sans-serif;}
             h1 {color: #2E86AB !important; text-align: center; margin-bottom: 20px;}
-            /* 侧边栏标题 */
             .sidebar-header {color: #A23B72; font-weight: bold; margin: 10px 0 5px 0;}
-            /* 聊天气泡 */
             .stChatMessage {border-radius: 12px; padding: 10px 15px; margin-bottom: 8px;}
-            /* 按钮样式 */
             .stButton>button {border-radius: 8px; background-color: #F18F01; color: white; border: none;}
             .stButton>button:hover {background-color: #C77800;}
-            /* 代码块样式 */
             pre {border-radius: 8px !important;}
         </style>
     """, unsafe_allow_html=True)
 
     # 页面标题
-    st.title("✍️ DeepSeek 智能文案助手")
-    st.caption("第六课稳定版 | 自动选中+快捷键复制")
+    st.title("✍️ 多模型智能文案助手")
+    st.caption("第七课 | DeepSeek/千问双模型切换")
 
-    # 侧边栏功能区
+    # 侧边栏：新增模型选择 + 原有设置
     with st.sidebar:
+        st.markdown('<div class="sidebar-header">🔄 模型选择</div>', unsafe_allow_html=True)
+        selected_model = st.selectbox(
+            "选择文案生成模型",
+            options=list(MODEL_CONFIGS.keys()),
+            index=0,
+            help="DeepSeek偏正式 | 千问偏口语"
+        )
+
+        st.divider()
         st.markdown('<div class="sidebar-header">⚙️ 基础设置</div>', unsafe_allow_html=True)
         temp = st.slider("回复创意度", 0.0, 1.0, 0.3, 0.1, help="0=稳定 | 1=创意")
         max_tokens = st.slider("最大长度", 50, 500, 150, 50, help="控制文案字数")
         reset_btn = st.button("🗑️ 清空历史", type="secondary")
 
-        st.divider()  # 分割线
+        st.divider()
         st.markdown('<div class="sidebar-header">📋 预设模板</div>', unsafe_allow_html=True)
         selected_template = st.selectbox("选择文案模板", list(PROMPT_TEMPLATES.keys()), index=0)
         use_template_btn = st.button("🚀 使用模板", type="primary")
 
-    # 会话状态初始化
-    if "bot" not in st.session_state:
-        st.session_state.bot = DeepSeekChatBot(temperature=temp, max_tokens=max_tokens)
+    # 会话状态初始化（兼容多模型）
+    if "bot" not in st.session_state or st.session_state.bot.model_name != selected_model:
+        st.session_state.bot = MultiModelChatBot(
+            model_name=selected_model,
+            temperature=temp,
+            max_tokens=max_tokens
+        )
     if "chat_history_display" not in st.session_state:
         st.session_state.chat_history_display = []
     if "last_reply" not in st.session_state:
@@ -158,7 +201,7 @@ def main():
     if use_template_btn:
         template_prompt = PROMPT_TEMPLATES[selected_template]
         st.session_state.chat_history_display.append({"role": "user", "content": template_prompt})
-        with st.spinner("✨ AI正在生成文案..."):
+        with st.spinner(f"✨ {selected_model}正在生成文案..."):
             try:
                 ai_reply = st.session_state.bot.send_message(
                     template_prompt,
@@ -171,10 +214,10 @@ def main():
                 st.error(f"❌ 生成失败：{str(e)}")
 
     # 自定义输入逻辑
-    user_input = st.chat_input("💡 输入自定义文案需求（或使用左侧预设模板）")
+    user_input = st.chat_input(f"💡 输入自定义文案需求（当前模型：{selected_model}）")
     if user_input:
         st.session_state.chat_history_display.append({"role": "user", "content": user_input})
-        with st.spinner("✨ AI正在思考..."):
+        with st.spinner(f"✨ {selected_model}正在思考..."):
             try:
                 ai_reply = st.session_state.bot.send_message(
                     user_input,
@@ -186,27 +229,22 @@ def main():
             except Exception as e:
                 st.error(f"❌ 出错了：{str(e)}")
 
-    # 主体布局：聊天区 + 工具区
+    # 聊天记录+工具区
     col1, col2 = st.columns([8, 2])
-
-    # 聊天记录展示区
     with col1:
         for msg in st.session_state.chat_history_display:
             avatar = "🧑" if msg["role"] == "user" else "🤖"
             with st.chat_message(msg["role"], avatar=avatar):
                 st.markdown(msg["content"])
 
-    # 工具区：方案2（自动选中+快捷键复制）
+    # 工具区：自动选中+快捷键复制
     with col2:
         st.markdown('<div class="sidebar-header">🔧 文案工具</div>', unsafe_allow_html=True)
         if st.session_state.last_reply:
-            # 显示文案代码块（自动选中）
             st.code(st.session_state.last_reply, language="text")
-            
-            # 自动选中文案的JS脚本
+            # 自动选中文案的JS
             st.markdown("""
                 <script>
-                    // 页面加载完成后自动选中最后一个代码块内容
                     document.addEventListener('DOMContentLoaded', function() {
                         const codeBlocks = document.querySelectorAll('pre code');
                         if (codeBlocks.length > 0) {
@@ -220,11 +258,7 @@ def main():
                     });
                 </script>
             """, unsafe_allow_html=True)
-            
-            # 友好提示
             st.success("✅ 文案已自动选中，按 Ctrl+C（Win）/ Cmd+C（Mac）即可复制！")
-            
-            # 导出TXT按钮
             export_to_txt(st.session_state.last_reply)
         else:
             st.info("💡 生成文案后可使用复制/导出功能")
